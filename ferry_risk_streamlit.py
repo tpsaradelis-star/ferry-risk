@@ -297,6 +297,7 @@ def risk_for_date(date_obj, time_obj):
 def main():
     st.title("Hy-Line Fast Ferry Risk Checker – Nantucket Sound (ANZ232)")
 
+    # Inputs
     today = dt.date.today()
     default_time = dt.time(hour=6, minute=10)
 
@@ -306,36 +307,65 @@ def main():
     with col2:
         time_input = st.time_input("Departure time (local)", value=default_time)
 
+    # Fetch forecast periods up front
+    try:
+        block = fetch_anz232_block()
+        periods = parse_periods_from_block(block)
+    except Exception as e:
+        st.error(f"Error fetching or parsing marine forecast: {e}")
+        return
+
+    # Build a label -> body mapping for easy selection
+    label_to_body = {label: body for (label, body) in periods}
+    period_labels = list(label_to_body.keys())
+
+    st.markdown("### Forecast period from NWS marine forecast (ANZ232)")
+    selected_label = st.selectbox(
+        "Choose the period that best matches your departure time:",
+        period_labels,
+    )
+
     if st.button("Run risk assessment"):
-        try:
-            info = risk_for_date(date_input, time_input)
-        except Exception as e:
-            st.error(f"Error computing risk: {e}")
-            return
+        body = label_to_body[selected_label]
+
+        # Extract seas, winds, gusts, and period from the selected forecast text
+        seas_ft, wspd_kt, gust_kt, dpd_s = extract_wind_seas_period(body)
+
+        # Time-of-day in hours for the model
+        tod_hour = time_input.hour + time_input.minute / 60.0
+
+        prob_run, prob_cancel, band = predict_ferry_run(
+            wvht_ft=seas_ft,
+            wspd_kt=wspd_kt,
+            gust_kt=gust_kt,
+            dpd_s=dpd_s,
+            tod_hour=tod_hour,
+        )
 
         st.subheader("Ferry Risk Estimate")
-        st.write(f"**Date (local):** {info['date']}")
-        st.write(f"**Departure (local):** {info['depart_local_time']}")
-        st.write(f"**Forecast period used:** {info['forecast_label_used']}")
-        st.write(f"**Forecast text:** {info['forecast_body_used']}")
+        st.write(f"**Date (local):** {date_input.isoformat()}")
+        st.write(f"**Departure (local):** {time_input.strftime('%H:%M')}")
+        st.write(f"**Forecast period used:** {selected_label}")
+        st.write(f"**Forecast text:** {body}")
 
         st.markdown("---")
-        st.write(f"**Seas (ft):** {info['seas_ft']:.2f}")
-        st.write(f"**Sustained wind (kt):** {info['wspd_kt']:.1f}")
-        st.write(f"**Gust (kt):** {info['gust_kt']:.1f}")
-        st.write(f"**Dominant period (s):** {info['dpd_s']:.1f}")
+        st.write(f"**Seas (ft):** {seas_ft:.2f}")
+        st.write(f"**Sustained wind (kt):** {wspd_kt:.1f}")
+        st.write(f"**Gust (kt):** {gust_kt:.1f}")
+        st.write(f"**Dominant period (s):** {dpd_s:.1f}")
 
         st.markdown("### Risk")
-        st.write(f"**RUN probability:** {info['prob_run']:.2f}")
-        st.write(f"**CANCEL probability:** {info['prob_cancel']:.2f}")
-        st.write(f"**Risk band:** {info['risk_band']}")
+        st.write(f"**RUN probability:** {prob_run:.2f}")
+        st.write(f"**CANCEL probability:** {prob_cancel:.2f}")
+        st.write(f"**Risk band:** {band}")
 
-        if info["risk_band"] in ["HIGH", "VERY HIGH"]:
+        if band in ["HIGH", "VERY HIGH"]:
             st.warning("Conditions are in the high-risk zone for cancellations.")
-        elif info["risk_band"] == "MODERATE":
+        elif band == "MODERATE":
             st.info("Moderate risk: conditions could go either way.")
         else:
             st.success("Low risk: conditions look favorable for running.")
+
 
 
 if __name__ == "__main__":
